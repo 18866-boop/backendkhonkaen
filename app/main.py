@@ -1,39 +1,92 @@
-// 1. ตรวจสอบว่าลิงก์ Base URL ดึงค่าจากตัวแปรที่เราตั้งไว้ใน Vercel/ไฟล์ .env ถูกต้อง
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:7860";
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+from pydantic import BaseModel
 
-// 2. ปรับตัวพาร์ท (Path) สำหรับ Fetch ข้อมูลทุกตัวให้มี /api/ นำหน้าคำสั่งเดิม
-useEffect(() => {
-  const loadData = async () => {
-    try {
-      // 📊 ดึงข้อมูลสรุปภาพรวมด้านบน (จำนวนคำร้องทั้งหมด, รอดำเนินการ, กำลังทำ, เสร็จสิ้น)
-      const resSummary = await fetch(`${API_URL}/api/summary`);
-      const dataSummary = await resSummary.json();
-      setSummaryData(dataSummary);
+from .data_loader import data_loader
 
-      // 📈 ดึงข้อมูลสำหรับกราฟประสิทธิภาพ (SLA)
-      const resPerformance = await fetch(`${API_URL}/api/performance`);
-      const dataPerformance = await resPerformance.json();
-      setSlaData(dataPerformance);
+class ComplaintCreate(BaseModel):
+    title: str
+    type: str
+    department: str
+    sub_department: str
+    district: str
+    community: str
 
-      // 🍕 ดึงข้อมูลแยกตามสถานะคำร้อง
-      const resStatus = await fetch(`${API_URL}/api/by-status`);
-      const dataStatus = await resStatus.json();
-      setStatusData(dataStatus);
+app = FastAPI(
+    title="Khon Kaen Smart City Complaint Analytics API",
+    description="API for analyzing civic complaint data in Khon Kaen Municipality",
+    version="1.0.0",
+    docs_url="/docs"
+)
 
-      // 🗺️ ดึงข้อมูลแยกตามเขต/อำเภอ
-      const resDistrict = await fetch(`${API_URL}/api/by-district`);
-      const dataDistrict = await resDistrict.json();
-      setDistrictData(dataDistrict);
+# เปิดประตูรับสิทธิ์ CORS ให้ฝั่งหน้าบ้านเข้าถึงได้อย่างปลอดภัย
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-      // 🛠️ ดึงข้อมูลแยกตามประเภทคำร้องเรียน (ถนนพัง, ไฟดับ, ขยะ ฯลฯ)
-      const resType = await fetch(`${API_URL}/api/by-type`);
-      const dataType = await resType.json();
-      setTypeData(dataType);
+@app.get("/api/summary")
+def get_summary():
+    return data_loader.get_summary()
 
-    } catch (error) {
-      console.error("เกิดข้อผิดพลาดในการโหลดข้อมูลคำร้องเรียน:", error);
-    }
-  };
+@app.get("/api/by-type")
+def get_by_type():
+    return data_loader.get_by_type()
 
-  loadData();
-}, []);
+@app.get("/api/by-department")
+def get_by_department():
+    return data_loader.get_by_department()
+
+@app.get("/api/performance")
+def get_performance():
+    return data_loader.get_performance()
+
+@app.get("/api/by-district")
+def get_by_district():
+    return data_loader.get_by_district()
+
+@app.get("/api/by-status")
+def get_by_status():
+    return data_loader.get_by_status()
+
+@app.get("/api/complaints")
+def get_complaints(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
+    search: str = Query("", description="Search term for complaint text or id"),
+    type: str = Query("", description="Filter by complaint type"),
+    district: str = Query("", description="Filter by district")
+):
+    return data_loader.get_records(
+        page=page,
+        per_page=per_page,
+        search=search,
+        complaint_type=type,
+        district=district
+    )
+
+@app.post("/api/complaints")
+def create_complaint(complaint: ComplaintCreate):
+    new_id = data_loader.add_complaint(
+        title=complaint.title,
+        complaint_type=complaint.type,
+        department=complaint.department,
+        sub_department=complaint.sub_department,
+        district=complaint.district,
+        community=complaint.community
+    )
+    return {"status": "success", "id": new_id, "message": "คำร้องได้รับการบันทึกเรียบร้อยแล้ว"}
+
+@app.put("/api/complaints/{complaint_id}/resolve")
+def resolve_complaint(complaint_id: str):
+    try:
+        data_loader.resolve_complaint(complaint_id)
+        return {"status": "success", "message": f"คำร้องหมายเลข {complaint_id} ได้รับการแก้ไขและบันทึกเสร็จสิ้นแล้ว"}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
